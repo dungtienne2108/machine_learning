@@ -8,6 +8,7 @@ from deepface import DeepFace
 from numpy.linalg import norm
 from config import APP_CONFIG
 from database_helper import DatabaseHelper
+from liveness_detection import LivenessDetector
 
 class FaceRecognitionService:
     def __init__(self):
@@ -17,10 +18,13 @@ class FaceRecognitionService:
         self.detector_backend = APP_CONFIG['detector_backend']
         self.confidence_threshold = APP_CONFIG['confidence_threshold']
         self.db = DatabaseHelper()
-        
+
         # Load OpenCV face cascade for quick detection
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
+
+        # Liveness Detection
+        self.liveness_detector = None
     
     def normalize_folder_name(self, name):
         """
@@ -323,3 +327,56 @@ class FaceRecognitionService:
             import traceback
             traceback.print_exc()
             return False
+
+    def get_liveness_detector(self, ear_threshold=0.2, consecutive_frames=3):
+        """
+        Lấy hoặc tạo Liveness Detector
+
+        Args:
+            ear_threshold: Ngưỡng Eye Aspect Ratio (mặc định 0.2)
+            consecutive_frames: Số frame mắt phải đóng để tính là nháy (mặc định 3)
+
+        Returns:
+            LivenessDetector instance
+        """
+        if self.liveness_detector is None:
+            self.liveness_detector = LivenessDetector(
+                ear_threshold=ear_threshold,
+                consecutive_frames=consecutive_frames
+            )
+        return self.liveness_detector
+
+    def verify_liveness(self, frame, timeout_seconds=10):
+        """
+        Xác minh liveness của người dùng bằng nháy mắt
+
+        Args:
+            frame: Khung hình từ webcam
+            timeout_seconds: Thời gian chờ tối đa (giây)
+
+        Returns:
+            dict chứa:
+                - 'liveness_passed': bool, đã xác minh liveness
+                - 'blink_count': int, số lần nháy
+                - 'frame': frame sau khi vẽ thông tin
+        """
+        detector = self.get_liveness_detector()
+        result = detector.detect_blink(frame)
+
+        # Vẽ thông tin lên frame
+        frame_with_info = detector.draw_eye_status(frame.copy(), result)
+
+        return {
+            'liveness_passed': result['liveness_passed'],
+            'blink_count': result['blink_count'],
+            'eye_open': result['eye_open'],
+            'right_ear': result['right_ear'],
+            'left_ear': result['left_ear'],
+            'blink_detected': result['blink_detected'],
+            'frame': frame_with_info
+        }
+
+    def reset_liveness_detector(self):
+        """Reset trạng thái Liveness Detector"""
+        if self.liveness_detector is not None:
+            self.liveness_detector.reset_liveness()
