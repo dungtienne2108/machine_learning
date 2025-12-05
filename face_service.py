@@ -8,7 +8,6 @@ from deepface import DeepFace
 from numpy.linalg import norm
 from config import APP_CONFIG
 from database_helper import DatabaseHelper
-from liveness_detection import LivenessDetector
 
 class FaceRecognitionService:
     def __init__(self):
@@ -18,13 +17,10 @@ class FaceRecognitionService:
         self.detector_backend = APP_CONFIG['detector_backend']
         self.confidence_threshold = APP_CONFIG['confidence_threshold']
         self.db = DatabaseHelper()
-
+        
         # Load OpenCV face cascade for quick detection
         cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
         self.face_cascade = cv2.CascadeClassifier(cascade_path)
-
-        # Liveness Detection
-        self.liveness_detector = None
     
     def normalize_folder_name(self, name):
         """
@@ -41,13 +37,45 @@ class FaceRecognitionService:
         
         return name
     
+    def imread_unicode(self, img_path):
+        """
+        Đọc ảnh với đường dẫn Unicode (hỗ trợ tiếng Việt)
+        """
+        try:
+            # Đọc file dưới dạng numpy array
+            with open(img_path, 'rb') as f:
+                file_bytes = np.asarray(bytearray(f.read()), dtype=np.uint8)
+            img = cv2.imdecode(file_bytes, cv2.IMREAD_COLOR)
+            return img
+        except Exception as e:
+            print(f"[LỖI] imread_unicode: {e}")
+            return None
+    
+    def imwrite_unicode(self, img_path, img):
+        """
+        Ghi ảnh với đường dẫn Unicode (hỗ trợ tiếng Việt)
+        """
+        try:
+            # Encode ảnh
+            is_success, buffer = cv2.imencode('.jpg', img)
+            if is_success:
+                # Ghi file
+                with open(img_path, 'wb') as f:
+                    f.write(buffer)
+                return True
+            return False
+        except Exception as e:
+            print(f"[LỖI] imwrite_unicode: {e}")
+            return False
+    
     def check_image_quality(self, img_path, min_size=80):
         """
         Kiểm tra chất lượng ảnh
         Returns: (is_valid, quality_score, message)
         """
         try:
-            img = cv2.imread(img_path)
+            # Sử dụng imread_unicode thay vì cv2.imread
+            img = self.imread_unicode(img_path)
             if img is None:
                 return False, 0.0, "Không đọc được ảnh"
             
@@ -157,16 +185,16 @@ class FaceRecognitionService:
                 dest_path = os.path.join(person_folder, safe_filename)
                 print(f"[INFO] Đang lưu ảnh {i+1}/{len(valid_images)}: {dest_path}")
                 
-                # Đọc và kiểm tra ảnh
-                img = cv2.imread(img_path)
+                # Đọc ảnh bằng imread_unicode
+                img = self.imread_unicode(img_path)
                 if img is None:
                     print(f"[LỖI] Không đọc được ảnh: {img_path}")
                     continue
                 
                 print(f"[INFO] Ảnh đọc được, kích thước: {img.shape}")
                 
-                # Ghi ảnh vào dataset với encoding UTF-8
-                success = cv2.imwrite(dest_path, img)
+                # Ghi ảnh vào dataset bằng imwrite_unicode
+                success = self.imwrite_unicode(dest_path, img)
                 if not success:
                     print(f"[LỖI] Không ghi được ảnh: {dest_path}")
                     continue
@@ -243,8 +271,15 @@ class FaceRecognitionService:
                     continue
                 
                 try:
+                    # Sử dụng imread_unicode để đọc ảnh
+                    img = self.imread_unicode(img_path)
+                    if img is None:
+                        print(f"[CẢNH BÁO] Không đọc được ảnh: {img_path}")
+                        continue
+                    
+                    # Tạo embedding từ numpy array thay vì đường dẫn
                     embedding = DeepFace.represent(
-                        img_path=img_path,
+                        img_path=img,  # Truyền numpy array thay vì path
                         model_name=self.model_name,
                         detector_backend=self.detector_backend,
                         enforce_detection=False
@@ -327,56 +362,3 @@ class FaceRecognitionService:
             import traceback
             traceback.print_exc()
             return False
-
-    def get_liveness_detector(self, ear_threshold=0.2, consecutive_frames=3):
-        """
-        Lấy hoặc tạo Liveness Detector
-
-        Args:
-            ear_threshold: Ngưỡng Eye Aspect Ratio (mặc định 0.2)
-            consecutive_frames: Số frame mắt phải đóng để tính là nháy (mặc định 3)
-
-        Returns:
-            LivenessDetector instance
-        """
-        if self.liveness_detector is None:
-            self.liveness_detector = LivenessDetector(
-                ear_threshold=ear_threshold,
-                consecutive_frames=consecutive_frames
-            )
-        return self.liveness_detector
-
-    def verify_liveness(self, frame, timeout_seconds=10):
-        """
-        Xác minh liveness của người dùng bằng nháy mắt
-
-        Args:
-            frame: Khung hình từ webcam
-            timeout_seconds: Thời gian chờ tối đa (giây)
-
-        Returns:
-            dict chứa:
-                - 'liveness_passed': bool, đã xác minh liveness
-                - 'blink_count': int, số lần nháy
-                - 'frame': frame sau khi vẽ thông tin
-        """
-        detector = self.get_liveness_detector()
-        result = detector.detect_blink(frame)
-
-        # Vẽ thông tin lên frame
-        frame_with_info = detector.draw_eye_status(frame.copy(), result)
-
-        return {
-            'liveness_passed': result['liveness_passed'],
-            'blink_count': result['blink_count'],
-            'eye_open': result['eye_open'],
-            'right_ear': result['right_ear'],
-            'left_ear': result['left_ear'],
-            'blink_detected': result['blink_detected'],
-            'frame': frame_with_info
-        }
-
-    def reset_liveness_detector(self):
-        """Reset trạng thái Liveness Detector"""
-        if self.liveness_detector is not None:
-            self.liveness_detector.reset_liveness()

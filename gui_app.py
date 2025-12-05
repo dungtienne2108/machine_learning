@@ -7,20 +7,22 @@ import threading
 from datetime import datetime
 from database_helper import DatabaseHelper
 from face_service import FaceRecognitionService
+from liveness_detector import LivenessDetector  # Import liveness detector
 from dialogs.login_dialog import LoginDialog
 from dialogs.add_person_dialog import AddPersonDialog
 from dialogs.manage_persons_dialog import ManagePersonsDialog
 
 class AttendanceRecognitionUI:
-    """Giao diện Attendance System - Đã sửa lỗi Admin Panel"""
+    """Giao diện Attendance System - Có Liveness Detection"""
     def __init__(self, root):
         self.root = root
-        self.root.title("Face Attendance System")
+        self.root.title("Face Attendance System with Anti-Spoofing")
         self.root.geometry("1280x720")
         self.root.configure(bg='#7c5ceb')
         
         self.db = DatabaseHelper()
         self.face_service = FaceRecognitionService()
+        self.liveness_detector = LivenessDetector()  # Khởi tạo liveness detector
         
         self.cap = None
         self.is_camera_running = False
@@ -31,6 +33,13 @@ class AttendanceRecognitionUI:
         self.embeddings = []
         self.is_camera_paused = False
         self.recognized_person = None
+        
+        # Liveness detection state
+        self.liveness_enabled = True  # Bật/tắt liveness detection
+        self.liveness_check_interval = 5  # Kiểm tra mỗi 5 frames
+        self.liveness_status = None
+        self.liveness_confidence = 0.0
+        self.liveness_details = {}
         
         self.setup_ui()
         self.start_recognition()
@@ -44,7 +53,7 @@ class AttendanceRecognitionUI:
         left_panel = tk.Frame(main_container, bg='#7c5ceb')
         left_panel.pack(side='left', fill='both', expand=True, padx=(0, 20))
         
-        # Header với nút admin
+        # Header với nút admin và liveness toggle
         header_frame = tk.Frame(left_panel, bg='#5940c9', height=100)
         header_frame.pack(fill='x', pady=(0, 10))
         header_frame.pack_propagate(False)
@@ -58,13 +67,29 @@ class AttendanceRecognitionUI:
         tk.Label(title_container, text="ATTENDANCE SYSTEM", 
                 font=("Arial", 28, "bold"), bg='#5940c9', fg='white').pack(side='left')
         
-        # Nút Admin ở góc phải header
-        btn_admin = tk.Button(header_frame, text="⚙️ ADMIN", 
+        # Buttons container (bên phải)
+        buttons_container = tk.Frame(header_frame, bg='#5940c9')
+        buttons_container.pack(side='right', padx=20)
+        
+        # Nút Liveness Toggle
+        self.btn_liveness = tk.Button(buttons_container, 
+                                     text="🛡️ LIVENESS: ON", 
+                                     font=("Arial", 10, "bold"), 
+                                     bg='#27ae60', fg='white',
+                                     relief='flat', cursor='hand2', 
+                                     command=self.toggle_liveness,
+                                     activebackground='#229954', 
+                                     borderwidth=0,
+                                     highlightthickness=0)
+        self.btn_liveness.pack(side='left', padx=(0, 10), ipadx=12, ipady=6)
+        
+        # Nút Admin
+        btn_admin = tk.Button(buttons_container, text="⚙️ ADMIN", 
                              font=("Arial", 11, "bold"), bg='#e74c3c', fg='white',
                              relief='flat', cursor='hand2', command=self.show_admin_login,
                              activebackground='#c0392b', borderwidth=0,
                              highlightthickness=0)
-        btn_admin.pack(side='right', padx=20, ipadx=15, ipady=8)
+        btn_admin.pack(side='left', ipadx=15, ipady=8)
         
         # Camera Frame
         camera_container = tk.Frame(left_panel, bg='#5940c9', padx=15, pady=15)
@@ -144,11 +169,52 @@ class AttendanceRecognitionUI:
                                    fg='#27ae60', wraplength=350)
         self.conf_label.pack(side='left')
         
+        # Liveness badge
+        self.liveness_badge = tk.Frame(badges_container, bg='#fff3cd', 
+                                      height=50, padx=25, pady=12)
+        self.liveness_badge.pack(fill='x', pady=8)
+        
+        liveness_content = tk.Frame(self.liveness_badge, bg='#fff3cd')
+        liveness_content.pack()
+        
+        tk.Label(liveness_content, text="🛡️", font=("Arial", 20), 
+                bg='#fff3cd').pack(side='left', padx=(0, 10))
+        self.liveness_label = tk.Label(liveness_content, text="Liveness: ---", 
+                                       font=("Arial", 14, "bold"), bg='#fff3cd', 
+                                       fg='#856404', wraplength=350)
+        self.liveness_label.pack(side='left')
+        
         # Status message
         self.status_label = tk.Label(self.info_card, text="", 
                                     font=("Arial", 13, "bold"), bg='white', 
                                     fg='#999', wraplength=400)
         self.status_label.pack(pady=(30, 0))
+    
+    def toggle_liveness(self):
+        """Bật/tắt liveness detection"""
+        self.liveness_enabled = not self.liveness_enabled
+        
+        if self.liveness_enabled:
+            self.btn_liveness.config(text="🛡️ LIVENESS: ON", bg='#27ae60')
+            messagebox.showinfo("Liveness Detection", 
+                              "Đã BẬT chống giả mạo!\n\n"
+                              "Hệ thống sẽ kiểm tra:\n"
+                              "• Chuyển động tự nhiên\n"
+                              "• Chớp mắt\n"
+                              "• Texture khuôn mặt\n"
+                              "• Phân tích tần số",
+                              parent=self.root)
+        else:
+            self.btn_liveness.config(text="🛡️ LIVENESS: OFF", bg='#e74c3c')
+            messagebox.showwarning("Liveness Detection", 
+                                 "Đã TẮT chống giả mạo!\n\n"
+                                 "⚠️ Cảnh báo: Hệ thống có thể chấp nhận ảnh/video giả",
+                                 parent=self.root)
+        
+        # Reset liveness detector
+        self.liveness_detector.reset()
+        self.liveness_status = None
+        self.liveness_confidence = 0.0
     
     def show_admin_login(self):
         """Hiển thị dialog đăng nhập admin"""
@@ -158,7 +224,7 @@ class AttendanceRecognitionUI:
         LoginDialog(self.root, on_login_success)
     
     def show_admin_menu(self, user_info):
-        """Hiển thị menu admin - ĐÃ SỬA LỖI HIỂN THỊ"""
+        """Hiển thị menu admin"""
         menu = tk.Toplevel(self.root)
         menu.title(f"Admin Panel - {user_info['full_name']}")
         menu.geometry("450x600")
@@ -172,26 +238,23 @@ class AttendanceRecognitionUI:
         y = self.root.winfo_y() + (self.root.winfo_height() // 2) - 300
         menu.geometry(f"450x600+{x}+{y}")
         
-        # Header với icon và text
+        # Header
         header = tk.Frame(menu, bg='#7c5ceb')
         header.pack(fill='x')
         
-        # Icon container
         icon_frame = tk.Frame(header, bg='#7c5ceb')
         icon_frame.pack(pady=(30, 10))
         
         tk.Label(icon_frame, text="⚙️", font=("Arial", 50), 
                 bg='#7c5ceb', fg='white').pack()
         
-        # Title
         tk.Label(header, text="ADMIN PANEL", font=("Arial", 20, "bold"), 
                 bg='#7c5ceb', fg='white').pack(pady=(5, 10))
         
-        # Menu buttons container
+        # Menu buttons
         menu_frame = tk.Frame(menu, bg='#ecf0f1')
         menu_frame.pack(fill='both', expand=True, padx=40, pady=30)
         
-        # Buttons với icon và màu sắc
         buttons = [
             ("➕ Thêm người mới", '#27ae60', self.add_person_action),
             ("📋 Quản lý đối tượng", '#3498db', self.manage_persons_action),
@@ -202,7 +265,6 @@ class AttendanceRecognitionUI:
         ]
         
         for text, color, command in buttons:
-            # Button container
             btn_container = tk.Frame(menu_frame, bg='#ecf0f1')
             btn_container.pack(fill='x', pady=8)
             
@@ -212,7 +274,6 @@ class AttendanceRecognitionUI:
                            borderwidth=0, highlightthickness=0)
             btn.pack(fill='x', ipady=15)
             
-            # Hover effect
             def make_hover(btn, normal_color):
                 def on_enter(e):
                     rgb = btn.winfo_rgb(normal_color)
@@ -330,10 +391,11 @@ class AttendanceRecognitionUI:
             return
         
         self.is_camera_paused = False
+        self.liveness_detector.reset()  # Reset liveness detector
         print("[INFO] Camera màn hình chính đã hoạt động trở lại")
     
     def recognition_loop(self):
-        """Vòng lặp nhận diện"""
+        """Vòng lặp nhận diện với liveness detection - FIX HOÀN TOÀN"""
         if self.cap is None or not self.cap.isOpened():
             self.cap = cv2.VideoCapture(0)
         
@@ -396,9 +458,10 @@ class AttendanceRecognitionUI:
                 if len(faces) == 0 and self.recognized_person is not None:
                     current_time = datetime.now()
                     if self.last_recognition_time and \
-                       (current_time - self.last_recognition_time).total_seconds() > self.recognition_cooldown:
+                    (current_time - self.last_recognition_time).total_seconds() > self.recognition_cooldown:
                         self.reset_to_waiting_state()
                 
+                # Nhận diện khuôn mặt mỗi 10 frames
                 if frame_count % 10 == 0 and len(self.embeddings) > 0:
                     last_results = []
                     try:
@@ -413,45 +476,146 @@ class AttendanceRecognitionUI:
                             
                             face_img = frame[y:y+h, x:x+w]
                             if face_img.size > 0:
-                                emb = DeepFace.represent(
-                                    face_img,
-                                    model_name=self.face_service.model_name,
-                                    detector_backend="skip",
-                                    enforce_detection=False
-                                )[0]["embedding"]
+                                # ============================================
+                                # LIVENESS DETECTION - FIX HOÀN TOÀN
+                                # ============================================
+                                allow_recognition = True  # MẶC ĐỊNH: CHO PHÉP nhận diện
+                                is_real_face = True
+                                liveness_conf = 1.0
                                 
-                                emb_array = np.array(emb, dtype=np.float32)
-                                identity, confidence = self.face_service.find_best_match(
-                                    emb_array, self.embeddings)
-                                
-                                last_results.append((x, y, w, h, identity, confidence))
-                                
-                                if identity != "Unknown" and confidence > 0.6:
-                                    current_time = datetime.now()
+                                # Chỉ kiểm tra liveness khi được bật
+                                if self.liveness_enabled:
+                                    # Kiểm tra liveness mỗi N frames để tối ưu
+                                    if frame_count % self.liveness_check_interval == 0:
+                                        try:
+                                            is_real_check, conf_check, details_check = \
+                                                self.liveness_detector.check_liveness(frame, (x, y, w, h))
+                                            
+                                            # Lưu kết quả
+                                            self.liveness_status = is_real_check
+                                            self.liveness_confidence = conf_check
+                                            self.liveness_details = details_check
+                                            
+                                            print(f"[DEBUG] Liveness check: is_real={is_real_check}, conf={conf_check:.2f}")
+                                        except Exception as e:
+                                            print(f"[LỖI] Liveness check failed: {e}")
+                                            # Nếu lỗi, cho phép nhận diện
+                                            self.liveness_status = None
                                     
-                                    if self.recognized_person is not None:
-                                        if identity == self.recognized_person['name']:
-                                            self.update_recognized_status()
-                                        else:
-                                            if (self.last_recognition_time is None or 
-                                                (current_time - self.last_recognition_time).total_seconds() > self.recognition_cooldown):
-                                                self.update_student_info(identity, confidence, face_img)
-                                                self.last_recognition_time = current_time
+                                    # Xác định có cho phép nhận diện không
+                                    # CHỈ CHẶN KHI ĐÃ XÁC NHẬN LÀ FAKE
+                                    if self.liveness_status == False:
+                                        # Đã xác nhận FAKE - CHẶN nhận diện
+                                        allow_recognition = False
+                                        is_real_face = False
+                                        liveness_conf = self.liveness_confidence
+                                        
+                                        # Cập nhật UI - FAKE
+                                        self.liveness_label.config(
+                                            text=f"✗ FAKE ({self.liveness_confidence*100:.0f}%)",
+                                            fg='#e74c3c'
+                                        )
+                                        self.liveness_badge.config(bg='#f8d7da')
+                                        print("[INFO] CHẶN nhận diện - Phát hiện FAKE")
+                                        
+                                    elif self.liveness_status == True:
+                                        # Đã xác nhận REAL - CHO PHÉP nhận diện
+                                        allow_recognition = True
+                                        is_real_face = True
+                                        liveness_conf = self.liveness_confidence
+                                        
+                                        # Cập nhật UI - REAL
+                                        self.liveness_label.config(
+                                            text=f"✓ REAL ({self.liveness_confidence*100:.0f}%)",
+                                            fg='#27ae60'
+                                        )
+                                        self.liveness_badge.config(bg='#d4edda')
+                                        
                                     else:
-                                        self.update_student_info(identity, confidence, face_img)
-                                        self.last_recognition_time = current_time
+                                        # Chưa có kết quả (None) - VẪN CHO PHÉP nhận diện
+                                        allow_recognition = True
+                                        is_real_face = True
+                                        
+                                        # Cập nhật UI - Đang kiểm tra
+                                        self.liveness_label.config(
+                                            text="⏳ Đang kiểm tra...",
+                                            fg='#f39c12'
+                                        )
+                                        self.liveness_badge.config(bg='#fff3cd')
+                                
+                                # ============================================
+                                # NHẬN DIỆN - Chỉ khi được phép
+                                # ============================================
+                                if allow_recognition:
+                                    print(f"[DEBUG] Bắt đầu nhận diện... (liveness_enabled={self.liveness_enabled}, status={self.liveness_status})")
+                                    
+                                    # Tạo embedding và nhận diện
+                                    emb = DeepFace.represent(
+                                        face_img,
+                                        model_name=self.face_service.model_name,
+                                        detector_backend="skip",
+                                        enforce_detection=False
+                                    )[0]["embedding"]
+                                    
+                                    emb_array = np.array(emb, dtype=np.float32)
+                                    identity, confidence = self.face_service.find_best_match(
+                                        emb_array, self.embeddings)
+                                    
+                                    print(f"[DEBUG] Nhận diện: {identity} - {confidence*100:.1f}%")
+                                    
+                                    # Lưu kết quả
+                                    last_results.append((x, y, w, h, identity, confidence, is_real_face))
+                                    
+                                    # Xử lý nhận diện thành công
+                                    if identity != "Unknown" and confidence > 0.6:
+                                        current_time = datetime.now()
+                                        
+                                        if self.recognized_person is not None:
+                                            if identity == self.recognized_person['name']:
+                                                self.update_recognized_status()
+                                            else:
+                                                if (self.last_recognition_time is None or 
+                                                    (current_time - self.last_recognition_time).total_seconds() > self.recognition_cooldown):
+                                                    self.update_student_info(identity, confidence, face_img)
+                                                    self.last_recognition_time = current_time
+                                        else:
+                                            self.update_student_info(identity, confidence, face_img)
+                                            self.last_recognition_time = current_time
+                                else:
+                                    # Liveness failed - Vẽ warning
+                                    print("[INFO] Vẽ warning FAKE/PHOTO")
+                                    last_results.append((x, y, w, h, "FAKE/PHOTO", 0.0, False))
                     
                     except Exception as e:
                         print(f"[LỖI] DeepFace recognition: {e}")
+                        import traceback
+                        traceback.print_exc()
                 
+                # ============================================
+                # VẼ KẾT QUẢ LÊN FRAME
+                # ============================================
                 pil_image = Image.fromarray(frame_rgb)
                 draw = ImageDraw.Draw(pil_image)
                 
-                for (x, y, w, h, identity, confidence) in last_results:
-                    color = (0, 255, 0) if identity != "Unknown" else (255, 0, 0)
+                for result in last_results:
+                    if len(result) == 7:
+                        x, y, w, h, identity, confidence, is_real = result
+                    else:
+                        x, y, w, h, identity, confidence = result
+                        is_real = True
+                    
+                    # Màu dựa trên liveness và nhận diện
+                    if not is_real:
+                        color = (255, 0, 0)  # Đỏ - Fake
+                    elif identity != "Unknown":
+                        color = (0, 255, 0)  # Xanh lá - Real + Recognized
+                    else:
+                        color = (255, 255, 0)  # Vàng - Real but Unknown
+                    
                     corner_length = 30
                     thickness = 4
                     
+                    # Vẽ các góc của bounding box
                     draw.line([(x, y), (x + corner_length, y)], fill=color, width=thickness)
                     draw.line([(x, y), (x, y + corner_length)], fill=color, width=thickness)
                     draw.line([(x+w, y), (x+w - corner_length, y)], fill=color, width=thickness)
@@ -461,6 +625,7 @@ class AttendanceRecognitionUI:
                     draw.line([(x+w, y+h), (x+w - corner_length, y+h)], fill=color, width=thickness)
                     draw.line([(x+w, y+h), (x+w, y+h - corner_length)], fill=color, width=thickness)
                 
+                # Vẽ các khuôn mặt chưa nhận diện (chỉ detect)
                 if len(last_results) == 0:
                     for (x, y, w, h) in faces:
                         color = (255, 255, 0)
@@ -476,6 +641,7 @@ class AttendanceRecognitionUI:
                         draw.line([(x+w, y+h), (x+w - corner_length, y+h)], fill=color, width=thickness)
                         draw.line([(x+w, y+h), (x+w, y+h - corner_length)], fill=color, width=thickness)
                 
+                # Hiển thị lên canvas
                 try:
                     if not self.canvas_camera.winfo_exists():
                         break
@@ -493,6 +659,8 @@ class AttendanceRecognitionUI:
             
             except Exception as e:
                 print(f"[LỖI] recognition_loop: {e}")
+                import traceback
+                traceback.print_exc()
             
             try:
                 if self.root.winfo_exists():
@@ -506,11 +674,14 @@ class AttendanceRecognitionUI:
     def reset_to_waiting_state(self):
         """Reset về trạng thái chờ"""
         self.recognized_person = None
+        self.liveness_detector.reset()
         self.status_icon_label.config(text="👤", fg='#e0e0e0')
         self.name_label.config(text="Chờ nhận diện...", fg='#2c3e50')
         self.id_label.config(text="Mã: ------")
         self.dept_label.config(text="Phòng: ------")
         self.conf_label.config(text="Độ chính xác: ---%")
+        self.liveness_label.config(text="Liveness: ---", fg='#856404')
+        self.liveness_badge.config(bg='#fff3cd')
         self.status_label.config(text="", fg='#999')
     
     def update_recognized_status(self):
